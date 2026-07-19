@@ -48,10 +48,8 @@ PROPERTIES AUTOMOC ON
             AUTOUIC ON
             AUTORCC ON)
 
-if(BUILD_OUT_OF_TREE)
-  find_package(CURL REQUIRED)
-endif()
-target_link_libraries(${PROJECT_NAME} PRIVATE CURL::libcurl)
+# Ad-free/hardened build: the libcurl dependency existed solely for the file-updater that contacted
+# the Aitum advertising/telemetry endpoint. Both have been removed, so no HTTP client is linked.
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in ${CMAKE_CURRENT_SOURCE_DIR}/version.h)
 
@@ -71,7 +69,6 @@ target_sources(${PROJECT_NAME} PRIVATE
 	hotkey-edit.cpp
 	name-dialog.cpp
 	audio-wrapper-source.c
-	file-updater.c
 	multi-canvas-source.c
 	resources.qrc
 	vertical-canvas.hpp
@@ -87,7 +84,6 @@ target_sources(${PROJECT_NAME} PRIVATE
 	name-dialog.hpp
 	audio-wrapper-source.h
 	obs-websocket-api.h
-	file-updater.h
 	multi-canvas-source.h)
 
 if(BUILD_OUT_OF_TREE)

@@ -1121,10 +1121,8 @@ void OBSBasicSettings::AddServer()
 
 void OBSBasicSettings::LoadSettings()
 {
-	if (!canvasDock->newer_version_available.isEmpty()) {
-		newVersion->setText(QString::fromUtf8(obs_module_text("NewVersion")).arg(canvasDock->newer_version_available));
-		newVersion->setVisible(true);
-	}
+	// Ad-free/hardened build: the "new version available" notice was populated exclusively by the
+	// removed Aitum telemetry/update channel, so it is never shown.
 	resolution->setCurrentText(QString::number(canvasDock->canvas_width) + "x" + QString::number(canvasDock->canvas_height));
 	bool enable = !obs_output_active(canvasDock->recordOutput) && !obs_output_active(canvasDock->virtualCamOutput);
 	for (auto it = canvasDock->streamOutputs.begin(); it != canvasDock->streamOutputs.end(); ++it) {
