@@ -36,7 +36,6 @@
 #include "util/platform.h"
 #include "util/util.hpp"
 extern "C" {
-#include "file-updater.h"
 }
 
 #ifndef _WIN32
@@ -168,10 +167,6 @@ void frontend_event(obs_frontend_event event, void *private_data)
 			it->LoadScenes();
 			it->LogScenes();
 			it->FinishLoading();
-		}
-		if (!canvas_docks.empty()) {
-			auto cd = canvas_docks.front();
-			cd->AskUpdate();
 		}
 	} else if (event == OBS_FRONTEND_EVENT_SCENE_CHANGED) {
 		for (const auto &it : canvas_docks) {
@@ -504,6 +499,15 @@ void vendor_request_update_stream_key(obs_data_t *request_data, obs_data_t *resp
 		return;
 	}
 
+	// Validate the index at the request boundary before dispatching to the UI thread. It is bounds-checked
+	// again in updateStreamKey() (defense in depth). A negative index is always invalid.
+	const int index = (int)obs_data_get_int(request_data, "index");
+	if (index < 0) {
+		obs_data_set_string(response_data, "error", "'index' out of range");
+		obs_data_set_bool(response_data, "success", false);
+		return;
+	}
+
 	// Loop through each CanvasDock to find the right one
 	for (const auto &it : canvas_docks) {
 		if ((width && it->GetCanvasWidth() != width) || (height && it->GetCanvasHeight() != height)) {
@@ -512,7 +516,7 @@ void vendor_request_update_stream_key(obs_data_t *request_data, obs_data_t *resp
 
 		// Update stream_key using the UpdateStreamKey method of CanvasDock
 		QMetaObject::invokeMethod(it, "updateStreamKey", Q_ARG(QString, QString::fromUtf8(new_stream_key)),
-					  Q_ARG(int, (int)obs_data_get_int(request_data, "index")));
+					  Q_ARG(int, index));
 
 		obs_data_set_bool(response_data, "success", true);
 		return;
@@ -533,6 +537,15 @@ void vendor_request_update_stream_server(obs_data_t *request_data, obs_data_t *r
 		return;
 	}
 
+	// Validate the index at the request boundary before dispatching to the UI thread. It is bounds-checked
+	// again in updateStreamServer() (defense in depth). A negative index is always invalid.
+	const int index = (int)obs_data_get_int(request_data, "index");
+	if (index < 0) {
+		obs_data_set_string(response_data, "error", "'index' out of range");
+		obs_data_set_bool(response_data, "success", false);
+		return;
+	}
+
 	// Loop through each CanvasDock to find the right one
 	for (const auto &it : canvas_docks) {
 		if ((width && it->GetCanvasWidth() != width) || (height && it->GetCanvasHeight() != height)) {
@@ -541,7 +554,7 @@ void vendor_request_update_stream_server(obs_data_t *request_data, obs_data_t *r
 
 		// Update stream_server using the UpdateStreamServer method of CanvasDock
 		QMetaObject::invokeMethod(it, "updateStreamServer", Q_ARG(QString, QString::fromUtf8(new_stream_server)),
-					  Q_ARG(int, (int)obs_data_get_int(request_data, "index")));
+					  Q_ARG(int, index));
 
 		obs_data_set_bool(response_data, "success", true);
 		return;
@@ -618,24 +631,6 @@ void vendor_request_unpause_recording(obs_data_t *request_data, obs_data_t *resp
 		return;
 	}
 	obs_data_set_bool(response_data, "success", false);
-}
-
-update_info_t *version_update_info = nullptr;
-
-bool version_info_downloaded(void *param, struct file_download_data *file)
-{
-	UNUSED_PARAMETER(param);
-	if (!file || !file->buffer.num) {
-		return true;
-	}
-	for (const auto &it : canvas_docks) {
-		QMetaObject::invokeMethod(it, "ApiInfo", Q_ARG(QString, QString::fromUtf8((const char *)file->buffer.array)));
-	}
-	if (version_update_info) {
-		update_info_destroy(version_update_info);
-		version_update_info = nullptr;
-	}
-	return true;
 }
 
 bool obs_module_load(void)
@@ -741,14 +736,10 @@ void obs_module_post_load(void)
 	obs_websocket_vendor_register_request(vendor, "pause_recording", vendor_request_pause_recording, nullptr);
 	obs_websocket_vendor_register_request(vendor, "unpause_recording", vendor_request_unpause_recording, nullptr);
 
-	std::string url = "https://api.aitum.tv/plugin/vertical";
-	const char *pguid = config_get_string(obs_frontend_get_app_config(), "General", "InstallGUID");
-	if (pguid) {
-		url += "?uuid=";
-		url += pguid;
-	}
-
-	version_update_info = update_info_create_single("[Vertical Canvas]", "OBS", url.c_str(), version_info_downloaded, nullptr);
+	// Ad-free/hardened build: no automatic network request to Aitum. The upstream plugin contacted
+	// https://api.aitum.tv/plugin/vertical with OBS's stable InstallGUID and rendered server-controlled
+	// promotional "partnerBlocks" (labels, QSS, URLs, base64 images). That telemetry/advertising channel
+	// has been removed entirely, along with the file-updater/libcurl dependency it relied on.
 }
 
 void obs_module_unload(void)
@@ -772,12 +763,11 @@ void obs_module_unload(void)
 		obs_websocket_vendor_unregister_request(vendor, "stop_virtual_camera");
 		obs_websocket_vendor_unregister_request(vendor, "update_stream_key");
 		obs_websocket_vendor_unregister_request(vendor, "update_stream_server");
+		obs_websocket_vendor_unregister_request(vendor, "add_chapter");
+		obs_websocket_vendor_unregister_request(vendor, "pause_recording");
+		obs_websocket_vendor_unregister_request(vendor, "unpause_recording");
 	}
 	obs_frontend_remove_event_callback(frontend_event, nullptr);
-	if (version_update_info) {
-		update_info_destroy(version_update_info);
-		version_update_info = nullptr;
-	}
 }
 
 MODULE_EXPORT const char *obs_module_description(void)
@@ -1022,7 +1012,6 @@ CanvasDock::CanvasDock(obs_data_t *settings, QWidget *parent)
 		obs_data_set_bool(settings, "backtrack", true);
 		first_time = true;
 	}
-	partnerBlockTime = (time_t)obs_data_get_int(settings, "partner_block");
 	canvas_width = (uint32_t)obs_data_get_int(settings, "width");
 	if ((canvas_width & 1) == 1) {
 		canvas_width++;
@@ -1459,38 +1448,10 @@ CanvasDock::CanvasDock(obs_data_t *settings, QWidget *parent)
 	connect(configButton, SIGNAL(clicked()), this, SLOT(ConfigButtonClicked()));
 	buttonRow->addWidget(configButton);
 
-	auto aitumButtonGroupLayout = new QHBoxLayout();
-	aitumButtonGroupLayout->setContentsMargins(0, 0, 0, 0);
-	aitumButtonGroupLayout->setSpacing(0);
-
-	auto contributeButton = new QPushButton;
-	contributeButton->setMinimumHeight(30);
-	QPixmap pixmap(32, 32);
-	pixmap.fill(Qt::transparent);
-
-	QPainter painter(&pixmap);
-	QFont font = painter.font();
-	font.setPixelSize(32);
-	painter.setFont(font);
-	painter.drawText(pixmap.rect(), Qt::AlignCenter, "❤️");
-	contributeButton->setIcon(QIcon(pixmap));
-	contributeButton->setToolTip(QString::fromUtf8(obs_module_text("VerticalDonate")));
-	contributeButton->setStyleSheet(
-		QString::fromUtf8("QPushButton{ border-top-right-radius: 0; border-bottom-right-radius: 0;}"));
-	QPushButton::connect(contributeButton, &QPushButton::clicked,
-			     [] { QDesktopServices::openUrl(QUrl("https://aitum.tv/contribute")); });
-
-	aitumButtonGroupLayout->addWidget(contributeButton);
-
-	auto aitumButton = new QPushButton;
-	aitumButton->setMinimumHeight(30);
-	aitumButton->setIcon(QIcon(":/aitum/media/aitum.png"));
-	aitumButton->setToolTip(QString::fromUtf8("https://aitum.tv"));
-	aitumButton->setStyleSheet(QString::fromUtf8("QPushButton{border-top-left-radius: 0; border-bottom-left-radius: 0;}"));
-	connect(aitumButton, &QPushButton::clicked, [] { QDesktopServices::openUrl(QUrl("https://aitum.tv")); });
-	aitumButtonGroupLayout->addWidget(aitumButton);
-
-	buttonRow->addLayout(aitumButtonGroupLayout);
+	// Ad-free/hardened build: the upstream plugin placed a "donate" (heart) button linking to
+	// https://aitum.tv/contribute and an Aitum-logo button linking to https://aitum.tv in this row.
+	// Both promotional/donation buttons have been removed. Non-promotional author attribution remains
+	// in the settings dialog ("Made by Aitum").
 
 	setStyleSheet(QString::fromUtf8("QPushButton{padding-left: 4px; padding-right: 4px;}"));
 
@@ -1667,6 +1628,16 @@ CanvasDock::~CanvasDock()
 	//signal_handler_disconnect(sh, "source_load", source_load, this);
 	signal_handler_disconnect(sh, "source_save", source_save, this);
 
+	// Disconnect every output signal callback that captures `this` BEFORE stopping/releasing the outputs.
+	// OBS output stop is asynchronous and fires "stopping"/"stop" (and callbacks may already be queued),
+	// so a callback firing after this CanvasDock is destroyed would dereference a freed `this`
+	// (use-after-free). Disconnecting first makes teardown safe regardless of output state.
+	if (recordOutput) {
+		auto rsh = obs_output_get_signal_handler(recordOutput);
+		signal_handler_disconnect(rsh, "start", record_output_start, this);
+		signal_handler_disconnect(rsh, "stop", record_output_stop, this);
+		signal_handler_disconnect(rsh, "stopping", record_output_stopping, this);
+	}
 	if (obs_output_active(recordOutput)) {
 		obs_output_stop(recordOutput);
 	}
@@ -1676,6 +1647,8 @@ CanvasDock::~CanvasDock()
 	if (replayOutput) {
 		auto rpsh = obs_output_get_signal_handler(replayOutput);
 		signal_handler_disconnect(rpsh, "saved", replay_saved, this);
+		signal_handler_disconnect(rpsh, "start", replay_output_start, this);
+		signal_handler_disconnect(rpsh, "stop", replay_output_stop, this);
 	}
 
 	if (obs_output_active(replayOutput)) {
@@ -1684,6 +1657,11 @@ CanvasDock::~CanvasDock()
 	obs_output_release(replayOutput);
 	replayOutput = nullptr;
 
+	if (virtualCamOutput) {
+		auto vsh = obs_output_get_signal_handler(virtualCamOutput);
+		signal_handler_disconnect(vsh, "start", virtual_cam_output_start, this);
+		signal_handler_disconnect(vsh, "stop", virtual_cam_output_stop, this);
+	}
 	if (obs_output_active(virtualCamOutput)) {
 		obs_output_stop(virtualCamOutput);
 	}
@@ -1691,6 +1669,11 @@ CanvasDock::~CanvasDock()
 	virtualCamOutput = nullptr;
 
 	for (auto it = streamOutputs.begin(); it != streamOutputs.end(); ++it) {
+		if (it->output) {
+			auto ssh = obs_output_get_signal_handler(it->output);
+			signal_handler_disconnect(ssh, "start", stream_output_start, this);
+			signal_handler_disconnect(ssh, "stop", stream_output_stop, this);
+		}
 		if (obs_output_active(it->output)) {
 			obs_output_stop(it->output);
 		}
@@ -4955,7 +4938,19 @@ bool CanvasDock::add_sources_of_type_to_menu(void *param, obs_source_t *source)
 			}
 		}
 		auto na = new QAction(name, menu);
-		connect(na, &QAction::triggered, cd, [cd, source] { cd->AddSourceToScene(source); }, Qt::QueuedConnection);
+		// Capture a weak ref, not the raw source pointer. This is a Qt::QueuedConnection, so the slot runs
+		// later on the event loop; the enumerated source can be destroyed (via another dock, the frontend,
+		// or websocket) before the user clicks, which would otherwise be a use-after-free.
+		OBSWeakSource weak_source = OBSGetWeakRef(source);
+		connect(
+			na, &QAction::triggered, cd,
+			[cd, weak_source] {
+				OBSSource strong = OBSGetStrongRef(weak_source);
+				if (strong) {
+					cd->AddSourceToScene(strong);
+				}
+			},
+			Qt::QueuedConnection);
 		menu->insertAction(after, na);
 		struct descendant_info info = {false, cd->source, obs_scene_get_source(cd->scene)};
 		obs_source_enum_full_tree(source, check_descendant, &info);
@@ -5124,8 +5119,18 @@ bool CanvasDock::StartVideo()
 		}
 	}
 	obs_frontend_canvas_list_free(&cl);
-	if (canvas) {
-		obs_canvas_release(canvas);
+	// Serialize the canvas swap against the graphics-thread draw callback (DrawPreview /
+	// OBSProjector::OBSRender read and render `canvas`). Null the member and release the old canvas
+	// while holding the graphics lock the render callbacks run under, so a concurrent render can never
+	// dereference a freed obs_canvas_t (use-after-free). obs_frontend_add_canvas() is called AFTER
+	// leaving the graphics context to avoid a recursive-lock/deadlock hazard.
+	obs_canvas_t *old_canvas = nullptr;
+	obs_enter_graphics();
+	old_canvas = canvas;
+	canvas = nullptr;
+	obs_leave_graphics();
+	if (old_canvas) {
+		obs_canvas_release(old_canvas);
 	}
 	canvas = c ? c : obs_frontend_add_canvas(CANVAS_NAME, nullptr, PROGRAM);
 	auto ph = obs_get_proc_handler();
@@ -5350,6 +5355,18 @@ void CanvasDock::ReplayButtonClicked(QString filename)
 	}
 	if (!replayButton->isChecked()) {
 		replayButton->setChecked(true);
+	}
+	// A caller-supplied replay filename (e.g. via the "save_backtrack" websocket request) is written into
+	// the output's "format" setting, which determines the on-disk output path. Reject path separators and
+	// parent-directory traversal so an authenticated websocket client cannot direct the replay write
+	// outside the configured recording directory (arbitrary-file write / path traversal). A legitimate
+	// custom name is a bare filename/format template, so this does not affect valid use.
+	if (!filename.isEmpty()) {
+		if (filename.contains(QStringLiteral("..")) || filename.contains('/') || filename.contains('\\')) {
+			blog(LOG_WARNING, "[Vertical Canvas] rejected backtrack filename with path separators: %s",
+			     filename.toUtf8().constData());
+			filename.clear();
+		}
 	}
 	obs_data_t *s = obs_output_get_settings(replayOutput);
 	if (!filename.isEmpty()) {
@@ -6910,7 +6927,6 @@ obs_data_t *CanvasDock::SaveSettings()
 
 	obs_data_set_int(save_data, "width", canvas_width);
 	obs_data_set_int(save_data, "height", canvas_height);
-	obs_data_set_int(save_data, "partner_block", partnerBlockTime);
 	obs_data_set_bool(save_data, "preview_disabled", preview_disabled);
 	obs_data_set_bool(save_data, "virtual_cam_warned", virtual_cam_warned);
 	obs_data_set_int(save_data, "streaming_video_bitrate", streamingVideoBitrate);
@@ -8389,87 +8405,6 @@ void RemoveWidget(QWidget *widget)
 	delete widget;
 }
 
-void CanvasDock::ApiInfo(QString info)
-{
-	auto d = obs_data_create_from_json(info.toUtf8().constData());
-	if (!d) {
-		return;
-	}
-	auto data_obj = obs_data_get_obj(d, "data");
-	obs_data_release(d);
-	if (!data_obj) {
-		return;
-	}
-	auto version = obs_data_get_string(data_obj, "version");
-	int major;
-	int minor;
-	int patch;
-	if (sscanf(version, "%d.%d.%d", &major, &minor, &patch) == 3) {
-		auto sv = MAKE_SEMANTIC_VERSION(major, minor, patch);
-		if (sv > MAKE_SEMANTIC_VERSION(PROJECT_VERSION_MAJOR, PROJECT_VERSION_MINOR, PROJECT_VERSION_PATCH)) {
-			newer_version_available = QString::fromUtf8(version);
-			configButton->setStyleSheet(QString::fromUtf8("background: rgb(192,128,0);"));
-		}
-	}
-	time_t current_time = time(nullptr);
-	if (current_time < partnerBlockTime || current_time - partnerBlockTime > 1209600) {
-		obs_data_array_t *blocks = obs_data_get_array(data_obj, "partnerBlocks");
-		size_t count = obs_data_array_count(blocks);
-		size_t added_count = 0;
-		for (size_t i = count; i > 0; i--) {
-			obs_data_t *block = obs_data_array_item(blocks, i - 1);
-			auto block_type = obs_data_get_string(block, "type");
-			QBoxLayout *layout = nullptr;
-			if (strcmp(block_type, "LINK") == 0) {
-				auto button = new QPushButton(QString::fromUtf8(obs_data_get_string(block, "label")));
-				button->setStyleSheet(QString::fromUtf8(obs_data_get_string(block, "qss")));
-				auto url = QString::fromUtf8(obs_data_get_string(block, "data"));
-				connect(button, &QPushButton::clicked, [url] { QDesktopServices::openUrl(QUrl(url)); });
-				auto buttonRow = new QHBoxLayout;
-				buttonRow->addWidget(button);
-				layout = buttonRow;
-
-			} else if (strcmp(block_type, "IMAGE") == 0) {
-				auto image_data = QString::fromUtf8(obs_data_get_string(block, "data"));
-				if (image_data.startsWith("data:image/")) {
-					auto pos = image_data.indexOf(";");
-					auto format = image_data.mid(11, pos - 11);
-					QImage image;
-					if (image.loadFromData(QByteArray::fromBase64(image_data.mid(pos + 7).toUtf8().constData()),
-							       format.toUtf8().constData())) {
-						auto label = new AspectRatioPixmapLabel;
-						label->setPixmap(QPixmap::fromImage(image));
-						label->setAlignment(Qt::AlignCenter);
-						label->setStyleSheet(QString::fromUtf8(obs_data_get_string(block, "qss")));
-						auto labelRow = new QHBoxLayout;
-						labelRow->addWidget(label, 1, Qt::AlignCenter);
-						layout = labelRow;
-					}
-				}
-			}
-			if (layout) {
-				added_count++;
-				if (i == 1) {
-					auto closeButton = new QPushButton("🞫");
-					connect(closeButton, &QPushButton::clicked, [this, added_count] {
-						for (size_t j = 0; j < added_count; j++) {
-							auto item = mainLayout->takeAt(2);
-							RemoveLayoutItem(item);
-						}
-						partnerBlockTime = time(nullptr);
-						SaveSettings();
-					});
-					layout->addWidget(closeButton);
-				}
-				mainLayout->insertLayout(2, layout, 0);
-			}
-			obs_data_release(block);
-		}
-		obs_data_array_release(blocks);
-	}
-	obs_data_release(data_obj);
-}
-
 void CanvasDock::ProfileChanged()
 {
 	for (auto it = streamOutputs.begin(); it != streamOutputs.end(); ++it) {
@@ -8611,18 +8546,21 @@ void CanvasDock::OpenSourceProjector()
 
 void CanvasDock::updateStreamKey(const QString &newStreamKey, int index)
 {
-	if ((int)streamOutputs.size() < index) {
+	// Bounds check at the mutation boundary. The prior guard `size() < index` permitted both a negative
+	// index and index == size(), leading to out-of-bounds std::vector::operator[] (CWE-787). Require a
+	// valid, in-range index and use bounds-checked at().
+	if (index < 0 || static_cast<size_t>(index) >= streamOutputs.size()) {
 		return;
 	}
-	streamOutputs[index].stream_key = newStreamKey.toStdString();
+	streamOutputs.at(index).stream_key = newStreamKey.toStdString();
 }
 
 void CanvasDock::updateStreamServer(const QString &newStreamServer, int index)
 {
-	if ((int)streamOutputs.size() < index) {
+	if (index < 0 || static_cast<size_t>(index) >= streamOutputs.size()) {
 		return;
 	}
-	streamOutputs[index].stream_server = newStreamServer.toStdString();
+	streamOutputs.at(index).stream_server = newStreamServer.toStdString();
 }
 
 QMenu *CanvasDock::CreateVisibilityTransitionMenu(bool visible, obs_sceneitem_t *si)
@@ -9000,63 +8938,6 @@ void CanvasDock::LogFilter(obs_source_t *, obs_source_t *filter, void *v_val)
 	}
 
 	blog(LOG_INFO, "%s- filter: '%s' (%s)", indent.c_str(), name, id);
-}
-
-void CanvasDock::AskUpdate()
-{
-	if (newer_version_available.isEmpty()) {
-		return;
-	}
-	auto parts = newer_version_available.split(".");
-	if (parts.count() < 3) {
-		return;
-	}
-	int major = parts.value(0).toInt();
-	int minor = parts.value(1).toInt();
-	int patch = parts.value(2).toInt();
-	auto sv = MAKE_SEMANTIC_VERSION(major, minor, patch);
-
-	char *path = obs_module_config_path("config.json");
-	if (!path) {
-		return;
-	}
-
-	obs_data_t *config = obs_data_create_from_json_file_safe(path, "bak");
-
-	auto skip_version = config ? obs_data_get_int(config, "skip_version") : 0;
-	if (sv == skip_version) {
-		obs_data_release(config);
-		bfree(path);
-		return;
-	}
-
-	auto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-
-	QMessageBox mb(QMessageBox::Question, QString::fromUtf8(obs_frontend_get_locale_string("Updater.Title")),
-		       QString::fromUtf8(obs_frontend_get_locale_string("Updater.Text")) + " " +
-			       QString::fromUtf8(obs_module_text("VerticalCanvas")) + " " + newer_version_available,
-		       QMessageBox::StandardButtons(), main_window);
-	auto update = mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.UpdateNow")), QMessageBox::YesRole);
-	auto remind =
-		mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.RemindMeLater")), QMessageBox::RejectRole);
-	auto skip = mb.addButton(QString::fromUtf8(obs_frontend_get_locale_string("Updater.Skip")), QMessageBox::NoRole);
-	mb.setDefaultButton(remind);
-	mb.exec();
-	if (mb.clickedButton() == update) {
-		QDesktopServices::openUrl(QUrl(QString::fromUtf8("https://aitum.tv/download/stream-suite")));
-	} else if (mb.clickedButton() == skip) {
-		if (!config) {
-			config = obs_data_create();
-		}
-		obs_data_set_int(config, "skip_version", sv);
-		if (obs_data_save_json_safe(config, path, "tmp", "bak")) {
-			blog(LOG_INFO, "[Vertical Canvas] Saved settings");
-		} else {
-			blog(LOG_ERROR, "[Vertical Canvas] Failed saving settings");
-		}
-	}
-	obs_data_release(config);
-	bfree(path);
 }
 
 LockedCheckBox::LockedCheckBox()
