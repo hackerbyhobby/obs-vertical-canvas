@@ -1,0 +1,22 @@
+name: Security Guard
+on:
+  push:
+    branches: [master, main, 'release/**', 'security/**']
+  pull_request:
+    branches: [master, main]
+permissions:
+  contents: read
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+jobs:
+  ad-telemetry-guard:
+    name: Ad / Telemetry Regression Guard 🛡️
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
+      - name: Scan compiled sources for ad/telemetry/remote-UI code
+        run: bash .github/scripts/check-no-ads.sh
