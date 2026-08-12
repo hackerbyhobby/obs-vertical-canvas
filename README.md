@@ -1,3 +1,13 @@
+# Personal Fork
+
+⚠️ **FORK NOTICE**: This is a personal fork of [Aitum's obs-vertical-canvas](https://github.com/Aitum/obs-vertical-canvas).
+
+**License**: This project is licensed under [GPL-2.0](LICENSE). See the [original repository](https://github.com/Aitum/obs-vertical-canvas) for full details.
+
+**Personal Use Only**: This fork is maintained for personal use only. Any distributions or derivative works must comply with GPL-2.0 terms.
+
+---
+
 # Vertical Canvas for OBS Studio
 
 Plugin for [OBS Studio](https://github.com/obsproject/obs-studio) to add vertical canvas by [![Aitum logo](media/aitum.png) Aitum](https://aitum.tv)
