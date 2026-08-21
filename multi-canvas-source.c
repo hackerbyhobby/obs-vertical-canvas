@@ -160,18 +160,25 @@ void multi_canvas_source_add_canvas(void *data, obs_canvas_t *canvas, uint32_t w
 		if (mc->canvas.array[i] == canvas)
 			return;
 	}
+	// These parallel arrays are read every frame by multi_canvas_video_render on the graphics thread, and
+	// gs_texrender_create/destroy require the graphics context. Hold the graphics lock while mutating so
+	// the render callback can never observe a torn/reallocated array or a destroyed texrender
+	// (out-of-bounds / use-after-free). gs_enter_context is recursive, so this is safe from any thread.
+	obs_enter_graphics();
 	da_push_back(mc->widths, &width);
 	da_push_back(mc->heights, &height);
 	da_push_back(mc->canvas, &canvas);
 	gs_texrender_t *render = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	da_push_back(mc->renders, &render);
-
 	multi_canvas_update_size(mc);
+	obs_leave_graphics();
 }
 
 void multi_canvas_source_remove_canvas(void *data, obs_canvas_t *canvas)
 {
 	struct multi_canvas_info *mc = data;
+	// Serialize against the graphics-thread render callback (see multi_canvas_source_add_canvas).
+	obs_enter_graphics();
 	for (size_t i = 0; i < mc->canvas.num; i++) {
 		if (mc->canvas.array[i] == canvas) {
 			gs_texrender_destroy(mc->renders.array[i]);
@@ -183,6 +190,7 @@ void multi_canvas_source_remove_canvas(void *data, obs_canvas_t *canvas)
 		}
 	}
 	multi_canvas_update_size(mc);
+	obs_leave_graphics();
 }
 
 struct obs_source_info multi_canvas_source = {
